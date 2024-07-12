@@ -1,0 +1,519 @@
+---
+title: "US chronic Data analysis"
+output: pdf_document
+date: "2023-12-05"
+---
+```{r}
+# Load libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(glmnet)
+library(MASS)
+library(e1071)
+
+# Load the dataset
+# Set the working directory
+setwd("C:/Users/USER/Downloads")
+
+# Check the current working directory
+getwd()
+
+df <- read.csv("U.S._Chronic_Disease_Indicators__CDI_.csv")
+head(df)
+
+```
+```{r}
+# Initial data inspection
+print(head(df))
+print(str(df))
+```
+
+#Exploratory Data Analysis (EDA)
+
+```{r}
+# Check missing values
+print(colSums(is.na(df)))
+
+# Summary statistics
+print("Dataset Summary statistics:")
+print(summary(df))
+
+# Explore unique values in categorical columns
+print("Unique values in LocationAbbr:")
+print(unique(df$LocationAbbr))
+
+print("Unique values in Topic:")
+print(unique(df$Topic))
+
+```
+
+```{r}
+# Convert YearStart and YearEnd to datetime
+df$YearStart <- as.Date(df$YearStart, format='%Y')
+df$YearEnd <- as.Date(df$YearEnd, format='%Y')
+
+# Convert DataValue to numeric (handling errors with 'na.action' to convert non-numeric values to NA)
+df$DataValue <- as.numeric(as.character(df$DataValue))
+
+# Check data types again
+print(str(df))
+
+# Check missing values
+print(colSums(is.na(df)))
+
+# Explore unique values in categorical columns
+print("Unique values in LocationAbbr:")
+print(unique(df$LocationAbbr))
+
+print("Unique values in Topic:")
+print(unique(df$Topic))
+
+# Frequency distribution of categorical variables
+barplot(table(df$LocationAbbr), main='Frequency Distribution of LocationAbbr')
+
+# Time trends for categorical variables
+topic_counts <- table(df$YearStart, df$Topic)
+barplot(t(topic_counts), beside=TRUE, legend=rownames(topic_counts), 
+        main='Topic Counts Over Time', col=rainbow(ncol(topic_counts)))
+
+# Distribution of numeric variable
+hist(df$DataValue, breaks=20, main='Distribution of DataValue')
+
+# Remove missing or infinite values
+df_cleaned <- df[is.finite(df$DataValue), ]
+
+# Stratified analysis
+strat_means <- tapply(df_cleaned$DataValue, df_cleaned$StratificationCategoryID1, mean)
+
+# Create a bar plot
+barplot(strat_means, main='Mean DataValue by Stratification', xlab='StratificationCategoryID1', ylab='Mean DataValue')
+
+```
+
+#Linear Regression
+```{r}
+# Select relevant columns for Linear Regression
+selected_columns <- c('DataValue', 'LowConfidenceLimit', 'HighConfidenceLimit')
+
+# Drop rows with missing values in the selected columns
+df_selected <- na.omit(df[selected_columns])
+
+# Split the data into features and target
+X <- df_selected[c('LowConfidenceLimit', 'HighConfidenceLimit')]
+y <- df_selected$DataValue
+
+# Split into training and testing sets
+set.seed(42)  # Set seed for reproducibility
+split_index <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X[split_index, ]
+y_train <- y[split_index]
+X_test <- X[-split_index, ]
+y_test <- y[-split_index]
+
+# Create a Linear Regression model
+lr_model <- lm(DataValue ~ LowConfidenceLimit + HighConfidenceLimit, data = df_selected)
+
+# Make predictions
+y_pred <- predict(lr_model, newdata = X_test)
+
+# Evaluate the model
+mse <- mean((y_test - y_pred)^2)
+cat("Linear Regression MSE:", mse, "\n")
+
+# Visualize predictions vs actual values
+plot(X_test$LowConfidenceLimit, y_test, col='black', pch=16, xlab='Low Confidence Limit', ylab='DataValue', main='Linear Regression Predictions vs Actual Values')
+points(X_test$LowConfidenceLimit, y_pred, col='red', pch=16)
+legend("topright", legend=c('Actual Values', 'Predicted Values'), col=c('black', 'red'), pch=16)
+
+```
+
+#Model Training and Validation with Cross-Validation:
+```{r}
+# Load library for cross-validation
+library(caret)
+
+# Cross-validation for Linear Regression
+lr_model_cv <- train(DataValue ~ LowConfidenceLimit + HighConfidenceLimit, 
+                     data = df_selected, 
+                     method = "lm",
+                     trControl = trainControl(method = "cv", number = 5))
+
+# Extract cross-validated MSE
+cv_mse <- -lr_model_cv$results$RMSE[1]
+
+cat("Cross-validated MSE:", cv_mse, "\n")
+
+# Calculate RMSE
+rmse <- sqrt(mse)
+cat("RMSE:", rmse, "\n")
+```
+# Model Deployement
+```{r}
+# Save trained linear regression model
+saveRDS(lr_model, "linear_regression_model.rds")
+```
+
+```{r}
+# Load the saved model
+loaded_model <- readRDS("linear_regression_model.rds")
+
+```
+```{r}
+# Simulate new data 
+new_data <- data.frame(
+  LowConfidenceLimit = c(10, 15, 20),
+  HighConfidenceLimit = c(15, 20, 25)
+)
+
+# Make predictions on the new data
+new_predictions <- predict(loaded_model, newdata = new_data)
+
+# Display the predictions
+print(new_predictions)
+
+```
+
+
+# Shrinkage Methods (Lasso, Ridge):
+```{r}
+# Load libraries
+library(glmnet)
+
+# Standardize features
+X_train_scaled <- scale(X_train)
+
+# Lasso Regression
+lasso_model <- cv.glmnet(X_train_scaled, y_train, alpha = 1)
+
+# Ridge Regression
+ridge_model <- cv.glmnet(X_train_scaled, y_train, alpha = 0)
+
+```
+
+```{r}
+# Load libraries
+library(caret)
+library(glmnet)
+
+# Standardize features
+X_train_scaled <- scale(X_train)
+
+# Create a training control with 5-fold cross-validation
+train_control <- trainControl(method = "cv", number = 5)
+
+# Lasso Regression using cross-validation
+lasso_model <- train(
+  x = X_train_scaled,
+  y = y_train,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 1, lambda = seq(0.01, 1, length = 100))
+)
+
+# Ridge Regression using cross-validation
+ridge_model <- train(
+  x = X_train_scaled,
+  y = y_train,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 0, lambda = seq(0.01, 1, length = 100))
+)
+
+# View the results
+print(lasso_model)
+print(ridge_model)
+
+```
+
+
+```{r}
+# Check data types again
+print(str(df))
+
+```
+
+
+# LDA
+```{r}
+library(MASS)
+
+# Select relevant columns for LDA
+lda_data <- df[, c("DataValue", "LocationID", "YearStart")]
+
+# Remove missing values
+lda_data <- na.omit(lda_data)
+
+# Define the formula (response ~ predictors)
+formula <- LocationID ~ DataValue + YearStart
+
+# Fit LDA model
+lda_model <- lda(formula, data = lda_data)
+
+# Summary of LDA
+summary(lda_model)
+
+```
+```{r}
+# Create a factor for LocationID
+lda_data$LocationID <- as.factor(lda_data$LocationID)
+
+# Define the formula (response ~ predictors)
+formula <- LocationID ~ DataValue + YearStart
+
+# Create training control with 10-fold cross-validation
+ctrl <- trainControl(method = "cv", number = 10)
+
+# Train the LDA model using cross-validation
+lda_model_cv <- train(formula, data = lda_data, method = "lda", trControl = ctrl)
+
+# Print the cross-validated results
+print(lda_model_cv)
+
+```
+
+```{r}
+# Select relevant columns for Logistic Regression
+logreg_data <- df[, c("DataValue", "LocationID", "YearStart")]
+
+# Remove missing values
+logreg_data <- na.omit(logreg_data)
+
+# Convert LocationID to a factor
+logreg_data$LocationID <- as.factor(logreg_data$LocationID)
+
+# Define the binary outcome variable
+logreg_data$BinaryOutcome <- as.factor(ifelse(logreg_data$LocationID == "target_location", 1, 0))
+
+set.seed(123)  # Set a seed for reproducibility
+sampled_data <- logreg_data[sample(nrow(logreg_data), 10000), ]
+
+# Define the formula with the new binary outcome variable
+formula <- BinaryOutcome ~ DataValue + YearStart
+
+# Create training control with 10-fold cross-validation
+ctrl <- trainControl(method = "cv", number = 10)
+
+# Train the Logistic Regression model using cross-validation
+logreg_model_cv <- train(formula, data = sampled_data, method = "glm", family = "binomial", trControl = ctrl)
+
+# Print the cross-validated results
+print(logreg_model_cv)
+# Create a small example of new data
+new_data <- data.frame(
+  DataValue = c(500, 600, 700),  
+  YearStart = as.Date(c("2023-01-01", "2023-02-01", "2023-03-01"))
+)
+
+# Model deployment on new data
+new_data_logreg <- predict(logreg_model_cv, newdata = new_data)
+
+print(new_data_logreg)
+
+```
+
+```{r}
+accuracy_values <- logreg_model_cv$results$Accuracy
+mean_accuracy <- mean(accuracy_values, na.rm = TRUE)
+
+print(paste("Mean Accuracy:", round(mean_accuracy, 4)))
+```
+# Nonparametric Logistic Regression
+
+
+```{r}
+# Select relevant columns for Nonparametric Logistic Regression
+nonparam_data <- df[, c("DataValue", "LocationID", "YearStart")]
+
+# Remove missing values
+nonparam_data <- na.omit(nonparam_data)
+
+# Convert LocationID to a factor
+nonparam_data$LocationID <- as.factor(nonparam_data$LocationID)
+
+# Define the binary outcome variable
+nonparam_data$BinaryOutcome <- as.factor(ifelse(nonparam_data$LocationID == "target_location", 1, 0))
+
+# Randomly sample 100 rows
+set.seed(123)  # Set a seed for reproducibility
+sampled_nonparam_data <- nonparam_data[sample(nrow(nonparam_data), 100), ]
+
+# Fit the Nonparametric Logistic Regression model (GAM) with splines
+library(splines)
+library(mgcv)
+
+# Define the formula with the new binary outcome variable and splines
+formula <- BinaryOutcome ~ ns(DataValue, df = 3) + ns(YearStart, df = 3)
+
+# Fit the GAM model
+nonparam_model <- gam(formula, data = sampled_nonparam_data, family = binomial())
+
+# Print the summary of the model
+summary(nonparam_model)
+```
+
+```{r}
+# Predict with the Nonparametric Logistic Regression model
+predictions <- predict(nonparam_model, newdata = sampled_nonparam_data, type = "response")
+
+# Convert predicted probabilities to class predictions
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+# Create a confusion matrix
+conf_matrix <- table(Actual = sampled_nonparam_data$BinaryOutcome, Predicted = predicted_classes)
+
+# Calculate accuracy
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+print(paste("Accuracy:", round(accuracy, 4)))
+
+```
+
+# Kernel Methods (Support Vector Machines - SVMs
+
+
+```{r}
+# Load the e1071 package
+library(e1071)
+
+# Select relevant columns for SVM
+svm_data <- df[, c("DataValue", "YearStart", "LocationID")]
+
+# Remove missing values
+svm_data <- na.omit(svm_data)
+
+# Convert LocationID to a factor
+svm_data$BinaryOutcome <- as.factor(ifelse(svm_data$LocationID %in% c(5, 8, 11, 13, 26, 41, 55), 1, 0))
+
+0
+set.seed(123)  # Set a seed for reproducibility
+sampled_svm_data <- svm_data[sample(nrow(svm_data), 10000), ]
+
+# Fit the SVM model with radial basis kernel
+svm_model <- svm(BinaryOutcome ~ DataValue + YearStart, data = sampled_svm_data, kernel = "radial")
+
+# Print the SVM model
+print(svm_model)
+
+# Make predictions on new data
+
+new_data_svm <- predict(svm_model, newdata = new_data)
+
+# The result will contain the predicted class and other information
+print(new_data_svm)
+
+```
+```{r}
+# Placeholder for true labels 
+true_labels <- rep(0, nrow(new_data))  
+
+# Convert predicted classes to factor
+predicted_classes <- as.factor(new_data_svm)
+
+# Calculate accuracy
+accuracy <- mean(predicted_classes == true_labels)
+print(paste("Accuracy:", round(accuracy, 4)))
+```
+
+```{r}
+# Linear Regression
+cat("Linear Regression MSE:", mse, "\n")
+
+# Cross-validated Linear Regression
+cat("Cross-validated MSE:", cv_mse, "\n")
+
+# Lasso Regression
+cat("Lasso Regression RMSE:", sqrt(lasso_model$results$RMSE[1]), "\n")
+
+# Ridge Regression
+cat("Ridge Regression RMSE:", sqrt(ridge_model$results$RMSE[1]), "\n")
+
+# LDA (Linear Discriminant Analysis)
+print("LDA Model Accuracy:")
+print(lda_model_cv$results$Accuracy)
+
+# Logistic Regression
+print("Logistic Regression Model Accuracy:")
+print(logreg_model_cv$results$Accuracy)
+
+# Nonparametric Logistic Regression
+cat("Nonparametric Logistic Regression Accuracy:", round(accuracy, 4), "\n")
+
+# SVM (Support Vector Machines)
+print("SVM Model Accuracy:")
+print(sum(predicted_classes == true_labels) / length(true_labels))
+
+```
+##Linear Regression MSE: 0.8561572
+
+  Explanation: Mean Squared Error (MSE) is a measure of the average squared difference between the predicted and actual values. In this case, the linear regression model has an MSE of approximately 0.856, which indicates the average squared difference between the predicted and actual values for the response variable (DataValue). Lower MSE values are desirable, suggesting better model performance.
+Cross-validated MSE: -0.905324
+
+  Explanation: Cross-validated MSE is the Mean Squared Error calculated using cross-validation. The negative sign might be an error or an output format specific to the caret package. The magnitude is important, and lower values still indicate better performance.
+  
+  
+##Lasso Regression RMSE: 1.69658
+
+Explanation: Root Mean Squared Error (RMSE) is similar to MSE but is in the same units as the response variable. The Lasso Regression model has an RMSE of approximately 1.697, indicating the average difference between the predicted and actual values. Lower RMSE values are preferred.
+Ridge Regression RMSE: 2.142513
+
+Explanation: Similar to Lasso, Ridge Regression's RMSE is approximately 2.143. Comparing this with the Lasso RMSE, we can see which regularization technique performed better. Again, lower values are better.
+
+##LDA Model Accuracy: 0.02366583
+
+Explanation: The Linear Discriminant Analysis (LDA) model has an accuracy of approximately 0.024. Accuracy is the proportion of correctly classified instances. In this case, the model correctly classifies around 2.4% of instances.
+
+
+## Logistic Regression Model Accuracy: 1
+
+Explanation: The Logistic Regression model has an accuracy of 1, which means it correctly classifies all instances. An accuracy of 1 is perfect.
+
+Explanation: The Nonparametric Logistic Regression (GAM) model has an accuracy of 1, indicating perfect classification of instances. 
+
+Explanation: The Support Vector Machines (SVM) model has an accuracy of 1, indicating perfect classification. 
+
+```{r}
+# Linear Regression
+# Response variable: DataValue
+# Predictors: LowConfidenceLimit, HighConfidenceLimit
+
+# LDA (Linear Discriminant Analysis)
+# Response variable: LocationID
+# Predictors: DataValue, YearStart
+
+# Logistic Regression
+# Response variable: BinaryOutcome
+# Predictors: DataValue, YearStart
+
+# Nonparametric Logistic Regression
+# Response variable: BinaryOutcome
+# Predictors: DataValue, YearStart
+
+# SVM (Support Vector Machines)
+# Response variable: BinaryOutcome
+# Predictors: DataValue, YearStart
+
+
+```
+
+```{r}
+# Create a data frame with model names and corresponding metrics
+models <- c("Linear Regression", "Cross-validated Linear Regression", "Lasso Regression", "Ridge Regression",
+            "LDA Model", "Logistic Regression", "Nonparametric Logistic Regression", "SVM Model")
+metrics <- c(mse, cv_mse, sqrt(lasso_model$results$RMSE[1]), sqrt(ridge_model$results$RMSE[1]),
+             lda_model_cv$results$Accuracy, logreg_model_cv$results$Accuracy, accuracy, sum(predicted_classes == true_labels) / length(true_labels))
+
+metrics_df <- data.frame(Model = models, Metric = metrics)
+
+# Plot the metrics
+library(ggplot2)
+
+ggplot(metrics_df, aes(x = Model, y = Metric, fill = Model)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Model Performance Metrics",
+       y = "Metric Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
